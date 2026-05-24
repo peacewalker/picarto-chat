@@ -2,9 +2,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir picabot
+ENV PYTHONUNBUFFERED=1
 
-COPY . /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY bot_recorder.py /app/bot_recorder.py
 
 RUN mkdir -p /data
 
