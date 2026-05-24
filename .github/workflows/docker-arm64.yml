@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: chatlog-recorder
+  IMAGE_NAME: picarto-chat-recorder
 
 jobs:
   build:
