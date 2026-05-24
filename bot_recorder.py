@@ -13,6 +13,7 @@ from picabot import PicaBot, PicaMessage
 
 PICARTO_BOT_USERNAME = os.getenv("PICARTO_BOT_USERNAME", "").strip()
 PICARTO_BOT_PASSWORD = os.getenv("PICARTO_BOT_PASSWORD", "").strip()
+PICARTO_BOT_NAME = os.getenv("PICARTO_BOT_NAME", PICARTO_BOT_USERNAME).strip()
 PICARTO_CHANNEL = os.getenv("PICARTO_CHANNEL", "").strip()
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
@@ -23,6 +24,9 @@ if not PICARTO_BOT_USERNAME:
 
 if not PICARTO_BOT_PASSWORD:
     raise RuntimeError("Missing environment variable: PICARTO_BOT_PASSWORD")
+
+if not PICARTO_BOT_NAME:
+    raise RuntimeError("Missing environment variable: PICARTO_BOT_NAME")
 
 if not PICARTO_CHANNEL:
     raise RuntimeError("Missing environment variable: PICARTO_CHANNEL")
@@ -99,27 +103,19 @@ def is_channel_online(channel_name: str) -> bool:
 
 
 def extract_message_record(message: PicaMessage) -> dict[str, Any]:
-    """
-    picabot 的 PicaMessage 字段可能随版本变化。
-    这里尽量兼容常见字段；如果你的运行日志里字段为空，
-    可以把 message.__dict__ 打印出来后按实际字段调整。
-    """
-    raw = getattr(message, "__dict__", {})
+    raw = getattr(message, "data", None)
 
     return {
         "record_type": "chat_message",
-        "channel": PICARTO_CHANNEL,
+        "channel": getattr(message, "channel_name", PICARTO_CHANNEL),
         "recorded_at": now_utc_iso(),
-        "user_name": (
-            getattr(message, "user_name", None)
-            or getattr(message, "username", None)
-            or getattr(message, "name", None)
-        ),
-        "message": (
-            getattr(message, "message", None)
-            or getattr(message, "content", None)
-            or getattr(message, "text", None)
-        ),
+        "message_timestamp": getattr(message, "message_timestamp", None),
+        "message_id": getattr(message, "message_id", None),
+        "user_id": getattr(message, "user_id", None),
+        "user_name": getattr(message, "user_name", None),
+        "user_color": getattr(message, "user_color", None),
+        "user_profile_pic": getattr(message, "user_profile_pic", None),
+        "message": getattr(message, "message", None),
         "raw": raw,
     }
 
@@ -167,11 +163,6 @@ def end_current_session(reason: str) -> None:
 
 
 async def online_status_loop() -> None:
-    """
-    负责按开播切分文件：
-    - offline -> online：新建一个 jsonl 文件
-    - online -> offline：写入 session_end，关闭当前文件
-    """
     was_online = False
 
     while not stop_event.is_set():
@@ -203,17 +194,18 @@ async def online_status_loop() -> None:
 bot = PicaBot.from_password(
     PICARTO_BOT_USERNAME,
     PICARTO_BOT_PASSWORD,
-    PICARTO_CHANNEL,
+    PICARTO_BOT_NAME,
 )
 
 
-@bot.on("message")
+@bot.event("message")
 async def on_message(message: PicaMessage):
-    """
-    只有频道在线、当前 session 文件存在时才写入。
-    这样可以确保文件按每次开播划分。
-    """
     if current_log_file is None:
+        return
+
+    message_channel = getattr(message, "channel_name", None)
+
+    if message_channel and message_channel.lower() != PICARTO_CHANNEL.lower():
         return
 
     record = extract_message_record(message)
@@ -237,13 +229,15 @@ async def main() -> None:
     status_task = asyncio.create_task(online_status_loop())
     bot_task = asyncio.create_task(run_bot_forever())
 
-    done, pending = await asyncio.wait(
-        [status_task, bot_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+        await asyncio.gather(status_task, bot_task)
+    finally:
+        for task in (status_task, bot_task):
+            if not task.done():
+                task.cancel()
 
-    for task in pending:
-        task.cancel()
+        if current_log_file is not None:
+            end_current_session("stopped")
 
 
 def handle_stop(*_args) -> None:
